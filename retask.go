@@ -42,7 +42,6 @@ func (c *Client) Enqueue(ctx context.Context, data []byte) error {
 	if err != nil {
 		return err
 	}
-	//fmt.Println("msg", string(msg))
 	return c.redisClient.LPush(ctx, c.queueName, string(msg)).Err()
 }
 
