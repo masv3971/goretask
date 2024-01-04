@@ -11,8 +11,9 @@ import (
 )
 
 type Message struct {
-	QueueName string
-	Data      string
+	Data string `json:"_data"`
+	URN  string `json:"urn"`
+	raw  string
 }
 
 type Client struct {
@@ -41,19 +42,32 @@ func (c *Client) Enqueue(ctx context.Context, data []byte) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("msg", string(msg))
+	//fmt.Println("msg", string(msg))
 	return c.redisClient.LPush(ctx, c.queueName, string(msg)).Err()
 }
 
-func (c *Client) Data(ctx context.Context) (*Message, error) {
+func (c *Client) Wait(ctx context.Context) (*Message, error) {
 	res, err := c.redisClient.BRPop(ctx, 0*time.Microsecond, c.queueName).Result()
 	if err != nil {
 		return nil, err
 	}
-	message := &Message{
-		QueueName: c.queueName,
-		Data:      res[1],
+	if len(res) == 0 {
+		return nil, ErrNoResult
+	}
+	message, err := populateMessage(ctx, res[1])
+	if err != nil {
+		return nil, err
 	}
 
 	return message, err
+}
+
+func populateMessage(ctx context.Context, data string) (*Message, error) {
+	m := &Message{
+		raw: data,
+	}
+	if err := json.Unmarshal([]byte(data), m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
