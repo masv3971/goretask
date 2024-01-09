@@ -1,4 +1,4 @@
-package goretask
+package retask
 
 import (
 	"context"
@@ -8,6 +8,10 @@ import (
 	"github.com/go-redis/redismock/v9"
 	"github.com/stretchr/testify/assert"
 )
+
+func mockUUID() string {
+	return "eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0"
+}
 
 func TestConsume(t *testing.T) {
 	db, mock := redismock.NewClientMock()
@@ -40,10 +44,9 @@ func TestConsume(t *testing.T) {
 
 	for _, tt := range tts {
 		t.Run(tt.name, func(t *testing.T) {
-			urn = tt.uuid
-
+			client.uuidFunc = mockUUID
 			mock.ExpectLPush("retaskqueue-test", tt.want.redis).SetVal(1)
-			err := client.Enqueue(context.Background(), []byte("test"))
+			_, err := client.Enqueue(context.Background(), []byte("test"))
 			assert.NoError(t, err)
 
 			mock.ExpectBRPop(0, "retaskqueue-test").SetVal([]string{"retaskqueue-test", tt.want.redis})
@@ -110,8 +113,7 @@ func TestWorker(t *testing.T) {
 
 	for _, tt := range tts {
 		t.Run(tt.name, func(t *testing.T) {
-			urn = tt.uuid
-
+			client.uuidFunc = mockUUID
 			go func() {
 				for {
 					time.Sleep(1 * time.Second)
@@ -128,7 +130,7 @@ func TestWorker(t *testing.T) {
 
 			mock.ExpectLPush("retaskqueue-test", tt.want.redis).SetVal(1)
 			t.Logf("enqueue one message")
-			err := client.Enqueue(context.Background(), []byte("test"))
+			_, err := client.Enqueue(context.Background(), []byte("test"))
 			assert.NoError(t, err)
 		})
 	}

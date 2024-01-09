@@ -1,4 +1,4 @@
-package goretask
+package retask
 
 import "errors"
 
