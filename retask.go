@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -14,8 +13,8 @@ func newURN() string {
 	return uuid.NewString()
 }
 
-// Message is a serialized representation of a message in the queue
-type Message struct {
+// Task is a serialized representation of a task in the queue
+type Task struct {
 	Data string `json:"_data"`
 	URN  string `json:"urn"`
 	raw  string
@@ -34,64 +33,54 @@ func (c *Client) setNewURN() {
 }
 
 // New creates a new client for interacting with the queue
-func New(ctx context.Context, queueName string, redisClient *redis.Client) (*Client, error) {
+func New(ctx context.Context, redisClient *redis.Client) (*Client, error) {
 	client := &Client{
 		redisClient: redisClient,
-		queueName:   fmt.Sprintf("retaskqueue-%s", queueName),
 		uuidFunc:    newURN,
 	}
 
 	return client, nil
 }
 
-// Enqueue adds a new message to the queue
-func (c *Client) Enqueue(ctx context.Context, data []byte) (string, error) {
-	c.setNewURN()
-	msg, err := c.wrap(data)
-	if err != nil {
-		return "", err
+// NewQueue creates a new queue
+func (c *Client) NewQueue(ctx context.Context, queueName string) *Queue {
+	q := &Queue{
+		redisClient: c.redisClient,
+		queueName:   fmt.Sprintf("retaskqueue-%s", queueName),
 	}
-	if err := c.redisClient.LPush(ctx, c.queueName, msg).Err(); err != nil {
-		return "", err
-	}
-	return c.currentURN, nil
+	return q
 }
 
-// Wait waits for a message to be available in the queue
-func (c *Client) Wait(ctx context.Context) (*Message, error) {
-	res, err := c.redisClient.BRPop(ctx, 0*time.Microsecond, c.queueName).Result()
-	if err != nil {
-		return nil, err
-	}
-	if len(res) == 0 {
-		return nil, ErrNoResult
-	}
-	message, err := populateMessage(ctx, res[1])
-	if err != nil {
-		return nil, err
-	}
-
-	return message, err
-}
-
-func populateMessage(ctx context.Context, data string) (*Message, error) {
-	m := &Message{
+func makeTask(ctx context.Context, data string) (*Task, error) {
+	task := &Task{
 		raw: data,
 	}
-	if err := json.Unmarshal([]byte(data), m); err != nil {
+	if err := json.Unmarshal([]byte(data), task); err != nil {
 		return nil, err
 	}
-	return m, nil
+	return task, nil
 }
 
-func (c *Client) wrap(data []byte) (string, error) {
+func makeTaskFromWait(ctx context.Context, data []string) (*Task, error) {
+	if len(data) == 0 {
+		return nil, ErrNoResult
+	}
+	task := &Task{
+		raw:  data[1],
+		URN:  data[0],
+		Data: data[1],
+	}
+	return task, nil
+}
+
+func makeWrapper(data []byte, urn string) (string, error) {
 	wrapper := map[string]any{
 		"_data": string(data),
-		"urn":   c.currentURN,
+		"urn":   urn,
 	}
-	msg, err := json.Marshal(wrapper)
+	task, err := json.Marshal(wrapper)
 	if err != nil {
 		return "", err
 	}
-	return string(msg), nil
+	return string(task), nil
 }
