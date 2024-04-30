@@ -2,6 +2,8 @@ package retask
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,18 +11,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func mockUUID() string {
-	return "eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0"
-}
+const mockUUID = "eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0"
 
 func TestConsume(t *testing.T) {
+	testUUID = mockUUID
 	db, mock := redismock.NewClientMock()
-	client, err := New(context.TODO(), "test", db)
+	client, err := New(context.TODO(), db)
 	assert.NoError(t, err)
 
 	type want struct {
-		redis   string
-		message *Message
+		redis string
+		task  *Task
 	}
 
 	tts := []struct {
@@ -32,7 +33,7 @@ func TestConsume(t *testing.T) {
 			name: "enqueue",
 			uuid: "eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0",
 			want: want{
-				message: &Message{
+				task: &Task{
 					Data: "test",
 					URN:  "eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0",
 					raw:  "{\"_data\":\"test\",\"urn\":\"eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0\"}",
@@ -44,28 +45,34 @@ func TestConsume(t *testing.T) {
 
 	for _, tt := range tts {
 		t.Run(tt.name, func(t *testing.T) {
-			client.uuidFunc = mockUUID
+			mock.MatchExpectationsInOrder(false)
+			mock.ExpectBRPop(0, "retaskqueue-test").SetVal([]string{"retaskqueue-test", tt.want.redis})
 			mock.ExpectLPush("retaskqueue-test", tt.want.redis).SetVal(1)
-			_, err := client.Enqueue(context.Background(), []byte("test"))
+			testQueue := client.NewQueue(context.Background(), "test")
+
+			_, err := testQueue.Enqueue(context.Background(), []byte("test"))
 			assert.NoError(t, err)
 
-			mock.ExpectBRPop(0, "retaskqueue-test").SetVal([]string{"retaskqueue-test", tt.want.redis})
-			got, err := client.Wait(context.Background())
-			assert.Equal(t, tt.want.message, got)
+			time.Sleep(1 * time.Second)
+
+			got, err := testQueue.Wait(context.Background())
+			fmt.Println("wait error", err)
+			assert.Equal(t, tt.want.task.Data, got.Data)
 		})
 	}
 }
 
-func TestPopulateMessage(t *testing.T) {
+func TestPopulateTask(t *testing.T) {
+	testUUID = mockUUID
 	tts := []struct {
 		name string
 		got  string
-		want *Message
+		want *Task
 	}{
 		{
 			name: "fi",
 			got:  "{\"_data\":\"test\",\"urn\":\"eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0\"}",
-			want: &Message{
+			want: &Task{
 				Data: "test",
 				URN:  "eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0",
 				raw:  "{\"_data\":\"test\",\"urn\":\"eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0\"}",
@@ -75,7 +82,7 @@ func TestPopulateMessage(t *testing.T) {
 
 	for _, tt := range tts {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := populateMessage(context.TODO(), tt.got)
+			got, err := makeTask(context.TODO(), tt.got)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -83,13 +90,14 @@ func TestPopulateMessage(t *testing.T) {
 }
 
 func TestWorker(t *testing.T) {
+	testUUID = mockUUID
 	db, mock := redismock.NewClientMock()
-	client, err := New(context.TODO(), "test", db)
+	client, err := New(context.TODO(), db)
 	assert.NoError(t, err)
 
 	type want struct {
-		redis   string
-		message *Message
+		redis string
+		task  *Task
 	}
 
 	tts := []struct {
@@ -101,7 +109,7 @@ func TestWorker(t *testing.T) {
 			name: "enqueue",
 			uuid: "eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0",
 			want: want{
-				message: &Message{
+				task: &Task{
 					Data: "test",
 					URN:  "eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0",
 					raw:  "{\"_data\":\"test\",\"urn\":\"eb2b0322-b0b4-4caf-8bb5-f2fee8c77ab0\"}",
@@ -113,25 +121,35 @@ func TestWorker(t *testing.T) {
 
 	for _, tt := range tts {
 		t.Run(tt.name, func(t *testing.T) {
-			client.uuidFunc = mockUUID
+			testQueue := client.NewQueue(context.Background(), "test")
+
+			mock.MatchExpectationsInOrder(false)
+			mock.ExpectLPush("retaskqueue-test", tt.want.redis).SetVal(1)
+			mock.ExpectBRPop(0*time.Microsecond, "retaskqueue-test").SetVal([]string{"retaskqueue-test", tt.want.redis})
+
+			t.Logf("enqueue one task")
+			_, err := testQueue.Enqueue(context.Background(), []byte("test"))
+			assert.NoError(t, err)
+
+			var wg sync.WaitGroup
+			wg.Add(1)
 			go func() {
 				for {
 					time.Sleep(1 * time.Second)
-					t.Logf("looking for message")
-					mock.ExpectBRPop(0, "retaskqueue-test").SetVal([]string{"retaskqueue-test", tt.want.redis})
-					task, err := client.Wait(context.TODO())
+					t.Logf("looking for a task...")
+					task, err := testQueue.Wait(context.TODO())
 					assert.NoError(t, err)
 
 					t.Logf("Received this task: %s with URN: %s", task.Data, task.URN)
+
+					time.Sleep(1 * time.Second)
+					wg.Done()
 				}
 			}()
-			t.Logf("sleep 3 seconds before adding message")
-			time.Sleep(3 * time.Second)
 
-			mock.ExpectLPush("retaskqueue-test", tt.want.redis).SetVal(1)
-			t.Logf("enqueue one message")
-			_, err := client.Enqueue(context.Background(), []byte("test"))
-			assert.NoError(t, err)
+			wg.Wait()
+
+			mock.ClearExpect()
 		})
 	}
 }
